@@ -1,0 +1,23 @@
+# Datos grandes / crudos
+*.pbix filter=lfs
+*.csv
+!**/muestra*.csv
+!**/sample*.csv
+data/raw/
+
+# Secretos
+.env
+*.env
+config.py
+*.secret
+
+# Entornos / caches
+.venv/
+venv/
+__pycache__/
+.ipynb_checkpoints/
+*.pyc
+
+# Sistema
+.DS_Store
+Thumbs.db
