@@ -1,0 +1,924 @@
+;; ============================================================================
+;; SIMULADOR ABM -- GESTION DE RESIDUOS SOLIDOS URBANOS EN BOGOTA
+;; Port a NetLogo del modelo real ya calibrado en Python (Mesa), replicando
+;; fielmente reglas, formulas y parametros reales (RMSE 1.196 pp, 2018-2023).
+;;
+;; Fuente de verdad de cada regla: abm/config_abm.py, abm/agentes_hogar.py,
+;; abm/agentes_reciclador.py, abm/agentes_infraestructura.py, abm/modelo.py,
+;; abm/entorno.py (proyecto Python original). Alcance: UN SOLO ANIO calibrado
+;; por corrida (365 ticks = 1 dia). El motor de numeros aleatorios de NetLogo
+;; es distinto al de Python (numpy via Mesa), asi que la fidelidad es
+;; ESTRUCTURAL y de reglas/datos reales, no un replay numerico exacto.
+;;
+;; CAPA VISUAL (2026-07-23): actores representados (hogares como personas,
+;; recicladores de oficio, camiones ASE patrullando, relleno Dona Juana),
+;; silueta urbana delimitada por umbral de distancia a centroides UPZ,
+;; paleta profesional, capas activables. NADA de esto altera la logica
+;; calibrada: es presentacion pura.
+;;
+;; Copia la carpeta "datos" (los 3 CSV) junto a este archivo .nlogox -- el
+;; codigo los lee con ruta relativa "datos/...".
+;; ============================================================================
+
+extensions [ csv table ]
+
+breed [ zonas zona ]
+breed [ etiquetas-loc etiqueta-loc ]
+breed [ rellenos relleno ]
+breed [ hogares hogar ]
+breed [ poblacion-recicladores poblacion-reciclador ]
+breed [ operadores operador ]
+undirected-link-breed [ vecindades-upz vecindad-upz ]
+
+patches-own [ zona-id loc-id es-borde? es-borde-localidad? ]
+
+zonas-own [
+  codigo-upz codigo-localidad nombre-localidad clasificacion-social
+  hogares-reales poblacion-total
+  pct-estrato-bajo pct-estrato-medio pct-estrato-alto
+  infraestructura-index-real infraestructura-index
+  pct-separa-upz-real pct-calidad-separacion-upz-real
+  pct-participacion-comunitaria-localidad
+  pct-vivienda-propia-localidad pct-informal-localidad
+  pct-registro-activo-reciclador pct-formalizacion-laboral-reciclador
+  num-recicladores-asignados
+  factor-incentivo ase-num
+  mis-patches
+  material-generado-dia material-pool-disponible material-aprovechado-dia material-rechazo-dia
+  acumulado-generado acumulado-aprovechado acumulado-rechazo
+  n-hog-zona n-fuera-base-zona indice-animo
+]
+
+etiquetas-loc-own [ nombre-loc ]
+
+hogares-own [
+  mi-zona estrato-categoria poblacion-representada
+  estado-actitud
+  prob-separa-base prob-separa-actual piso-escalado
+  pct-calidad-separacion
+  participa-comunitariamente? tiene-vivienda-propia? es-informal?
+  factor-heterogeneidad-hogar
+  generacion-diaria
+  material-separado-acumulado material-no-separado-acumulado
+]
+
+poblacion-recicladores-own [
+  mi-zona n-recicladores-asignados
+  pct-registro-activo pct-formalizacion-laboral
+  material-recolectado-acumulado
+]
+
+operadores-own [
+  ase-nombre ase-num capacidad-dia-ton capacidad-dia-ton-efectiva
+  material-recolectado-acumulado
+  destino paradas
+]
+
+;; NOTA: anio-simulado, multiplicador-infraestructura, multiplicador-capacidad-formal,
+;; capacidad-recoleccion-individual, beta-decaimiento, beta-recuperacion,
+;; umbral-percepcion-impacto, factor-brecha-intencion-accion (sliders), los switches
+;; mostrar-* y el chooser vista-mapa son WIDGETS -- NetLogo los declara como
+;; globales automaticamente.
+globals [
+  prob-separa-piso
+  factor-vivienda-propia factor-informal
+  capacidad-formal-total-dia-ton ultimo-recolectado-formal-dia
+  recolectado-informal-dia
+  margen-mundo umbral-silueta color-fondo escala-mapa
+  dias-por-tick semanas-por-anio
+  viz-hogares viz-recicladores viz-camiones viz-red viz-etiquetas
+]
+
+;; ============================================================================
+;; SETUP
+;; ============================================================================
+
+to setup
+  clear-all
+  set prob-separa-piso 0.4399
+  set semanas-por-anio 52
+  set dias-por-tick 365 / 52
+  set escala-mapa 1.75           ;; los centroides del CSV (1 unidad = 150 m) se dividen entre esto: 1 patch = 262.5 m -> patches mas grandes y mapa nitido
+  set margen-mundo 6
+  set umbral-silueta 8           ;; patches a mas de 8 unidades del centroide UPZ mas cercano quedan fuera de la ciudad (p90 de distancia entre vecinos ya escalada = 7.5)
+  set color-fondo [ 248 249 251 ] ;; blanco -- fondo fuera de Bogota
+
+  let todas-zonas but-first csv:from-file "datos/netlogo_zonas.csv"
+  let filas-zonas filter [ f -> item 0 f = anio-simulado ] todas-zonas
+  let filas-adyacencia but-first csv:from-file "datos/netlogo_adyacencia_upz.csv"
+  let todos-operadores but-first csv:from-file "datos/netlogo_operadores_ase.csv"
+  let filas-operadores filter [ f -> item 0 f = anio-simulado ] todos-operadores
+
+  if empty? filas-zonas [
+    user-message (word "No hay datos para el anio " anio-simulado " en netlogo_zonas.csv")
+    stop
+  ]
+
+  redimensionar-mundo filas-zonas
+
+  crear-zonas filas-zonas
+  cargar-mosaico-real
+  cachear-patches-por-zona
+  asignar-ase-a-zonas
+  marcar-bordes
+  crear-red-vecindad filas-adyacencia
+  crear-etiquetas-localidades
+  crear-relleno-dona-juana
+
+  crear-operadores filas-operadores
+  set capacidad-formal-total-dia-ton sum [ capacidad-dia-ton-efectiva ] of operadores
+  set ultimo-recolectado-formal-dia 0
+
+  crear-poblaciones-recicladores
+
+  set factor-vivienda-propia factor-relativo-por-odds-ratio 1.40
+  set factor-informal factor-relativo-por-odds-ratio 0.85
+
+  crear-hogares-por-cohorte
+
+  set viz-hogares "init"
+  set viz-recicladores "init"
+  set viz-camiones "init"
+  set viz-red "init"
+  set viz-etiquetas "init"
+  set recolectado-informal-dia 0
+  actualizar-metricas-animo
+  aplicar-visibilidad
+  actualizar-color-zonas
+  reset-ticks
+end
+
+to redimensionar-mundo [ filas-zonas ]
+  let xs map [ f -> (item 5 f) / escala-mapa ] filas-zonas
+  let ys map [ f -> (item 6 f) / escala-mapa ] filas-zonas
+  let min-x (floor (min xs)) - margen-mundo
+  let max-x (ceiling (max xs)) + margen-mundo
+  let min-y (floor (min ys)) - margen-mundo
+  let max-y (ceiling (max ys)) + margen-mundo
+  resize-world min-x max-x min-y max-y
+  let ancho-patches (max-x - min-x)
+  let alto-patches (max-y - min-y)
+  set-patch-size min list (420 / ancho-patches) (645 / alto-patches)
+end
+
+to crear-zonas [ filas-zonas ]
+  foreach filas-zonas [ f ->
+    create-zonas 1 [
+      set codigo-upz item 1 f
+      set codigo-localidad item 2 f
+      set nombre-localidad item 3 f
+      set clasificacion-social item 4 f
+      setxy ((item 5 f) / escala-mapa) ((item 6 f) / escala-mapa)
+      set hogares-reales item 7 f
+      set poblacion-total item 8 f
+      set pct-estrato-bajo item 9 f
+      set pct-estrato-medio item 10 f
+      set pct-estrato-alto item 11 f
+      set infraestructura-index-real item 12 f
+      set infraestructura-index (min list 1 (infraestructura-index-real * multiplicador-infraestructura))
+      set pct-separa-upz-real item 13 f
+      set pct-calidad-separacion-upz-real item 14 f
+      set pct-participacion-comunitaria-localidad item 15 f
+      set pct-vivienda-propia-localidad item 16 f
+      set pct-informal-localidad item 17 f
+      set pct-registro-activo-reciclador item 18 f
+      set pct-formalizacion-laboral-reciclador item 19 f
+      set num-recicladores-asignados item 20 f
+      set factor-incentivo item 21 f
+      set material-generado-dia 0
+      set material-pool-disponible 0
+      set material-aprovechado-dia 0
+      set material-rechazo-dia 0
+      set acumulado-generado 0
+      set acumulado-aprovechado 0
+      set acumulado-rechazo 0
+      set shape "circle"
+      set size 1
+      set hidden? true
+    ]
+  ]
+end
+
+;; Cada patch pertenece a la UPZ mas cercana SOLO si esta a menos de
+;; umbral-silueta -- lo demas es "fuera de Bogota" (fondo). Esto talla la
+;; silueta urbana real de la ciudad en vez de rellenar todo el rectangulo.
+to cargar-mosaico-real
+  ;; Forma REAL de cada UPZ, rasterizada desde IndUPZ.gpkg a esta misma grilla
+  ;; (ver abm/preparar_mapa_netlogo.py). Reemplaza el mosaico Voronoi por los
+  ;; poligonos reales, alineados 112/112. Cada patch queda con su UPZ y su localidad.
+  ask patches [
+    set zona-id -1 set loc-id -1 set es-borde? false set es-borde-localidad? false
+    set pcolor color-fondo
+  ]
+  let filas but-first csv:from-file "datos/netlogo_mapa_upz.csv"
+  foreach filas [ f ->
+    let px item 0 f
+    let py item 1 f
+    if (px >= min-pxcor) and (px <= max-pxcor) and (py >= min-pycor) and (py <= max-pycor) [
+      ask patch px py [ set zona-id item 2 f  set loc-id item 3 f ]
+    ]
+  ]
+end
+
+;; Asignacion oficial ASE -> UPZ (UAESP, Nuevo Esquema de Aseo). Da a cada zona su
+;; area de servicio exclusivo para que el camion correspondiente la atienda.
+to asignar-ase-a-zonas
+  let filas but-first csv:from-file "datos/netlogo_ase_upz.csv"
+  let tabla table:make
+  foreach filas [ f -> table:put tabla (item 0 f) (item 2 f) ]
+  ask zonas [
+    set ase-num ifelse-value (table:has-key? tabla codigo-upz) [ table:get tabla codigo-upz ] [ 1 ]
+  ]
+end
+
+to cachear-patches-por-zona
+  ask zonas [
+    set mis-patches patches with [ zona-id = [ codigo-upz ] of myself ]
+  ]
+end
+
+to marcar-bordes
+  ask patches with [ zona-id >= 0 ] [
+    if any? neighbors4 with [ (zona-id != [ zona-id ] of myself) ] [ set es-borde? true ]
+    ;; borde de LOCALIDAD: capa mas visible del mapa (el "esqueleto" tipo UAESP)
+    if any? neighbors4 with [ (loc-id > [ loc-id ] of myself) ] [ set es-borde-localidad? true ]
+  ]
+end
+
+to crear-red-vecindad [ filas-adyacencia ]
+  foreach filas-adyacencia [ f ->
+    let cod-origen item 0 f
+    let cod-vecina item 1 f
+    let za one-of zonas with [ codigo-upz = cod-origen ]
+    let zb one-of zonas with [ codigo-upz = cod-vecina ]
+    if (za != nobody) and (zb != nobody) [
+      ask za [
+        if not vecindad-upz-neighbor? zb [ create-vecindad-upz-with zb [ set color [ 110 125 155 110 ] ] ]
+      ]
+    ]
+  ]
+end
+
+to crear-etiquetas-localidades
+  let nombres remove-duplicates [ nombre-localidad ] of zonas
+  foreach nombres [ nom ->
+    let miembros zonas with [ nombre-localidad = nom ]
+    create-etiquetas-loc 1 [
+      setxy (mean [ xcor ] of miembros) (mean [ ycor ] of miembros)
+      set nombre-loc nom
+      set shape "circle"
+      set size 0.1
+      set color [ 0 0 0 0 ]
+      set label ""
+      set label-color [ 208 218 235 210 ]
+    ]
+  ]
+end
+
+;; Relleno Sanitario Dona Juana: ubicacion real al sur de la ciudad, borde
+;; Ciudad Bolivar / Usme (Mochuelo). Recibe el flujo de RECHAZO (material no
+;; aprovechado) -- el contador bajo el icono es acumulado del anio.
+to crear-relleno-dona-juana
+  create-rellenos 1 [
+    setxy -12.5 -57
+    set shape "relleno"
+    set color [ 125 102 76 ]
+    set size 11
+    set label "Relleno Dona Juana"
+    set label-color [ 235 225 210 ]
+  ]
+end
+
+to crear-operadores [ filas-operadores ]
+  foreach filas-operadores [ f ->
+    create-operadores 1 [
+      set ase-nombre item 1 f
+      set ase-num read-from-string (substring ase-nombre 4 5)
+      set capacidad-dia-ton item 2 f
+      set capacidad-dia-ton-efectiva capacidad-dia-ton * multiplicador-capacidad-formal
+      set material-recolectado-acumulado 0
+      set shape "camion"
+      set color [ 40 84 168 ]
+      set size 7 + (capacidad-dia-ton / 550)
+      set label substring ase-nombre 0 5
+      set label-color [ 22 40 82 ]
+      set destino nobody
+      set paradas 0
+      let mis-zonas zonas with [ ase-num = [ ase-num ] of myself ]
+      if any? mis-zonas [ move-to one-of mis-zonas ]
+    ]
+  ]
+end
+
+to crear-poblaciones-recicladores
+  ask zonas [
+    hatch-poblacion-recicladores 1 [
+      set mi-zona myself
+      set n-recicladores-asignados [ num-recicladores-asignados ] of myself
+      set pct-registro-activo [ pct-registro-activo-reciclador ] of myself
+      set pct-formalizacion-laboral [ pct-formalizacion-laboral-reciclador ] of myself
+      set material-recolectado-acumulado 0
+      move-to one-of [ mis-patches ] of myself
+      set shape "reciclador"
+      set size 2.6 + (sqrt (max list 1 n-recicladores-asignados) / 9)
+      set color [ 146 64 178 ]
+      set label ""
+    ]
+  ]
+end
+
+;; Formulas exactas de agentes_hogar.py -- replicar tal cual, no aproximar con
+;; el odds-ratio crudo como multiplicador directo.
+to-report ajustar-probabilidad-por-odds-ratio [ p odds-ratio ]
+  let pp (max list 1.0E-6 (min list (1 - 1.0E-6) p))
+  let momios pp / (1 - pp)
+  let nuevos-momios momios * odds-ratio
+  report nuevos-momios / (1 + nuevos-momios)
+end
+
+to-report factor-relativo-por-odds-ratio [ odds-ratio ]
+  report (ajustar-probabilidad-por-odds-ratio 0.5 odds-ratio) / 0.5
+end
+
+to crear-hogares-por-cohorte
+  ask zonas [
+    let combos (list (list "Baja" pct-estrato-bajo) (list "Media" pct-estrato-medio) (list "Alta" pct-estrato-alto))
+    foreach combos [ par ->
+      let estrato-actual item 0 par
+      let pct item 1 par
+      let hogares-categoria hogares-reales * (pct / 100)
+      if hogares-categoria > 0 [
+        let poblacion-categoria poblacion-total * (pct / 100)
+        let n-agentes max list 1 (round (hogares-categoria * 0.03))
+        let poblacion-por-agente poblacion-categoria / n-agentes
+        let prob-base-cohorte (pct-separa-upz-real / 100) * factor-brecha-intencion-accion
+        let pct-calidad-frac ifelse-value (pct-calidad-separacion-upz-real > 1)
+          [ pct-calidad-separacion-upz-real / 100 ] [ pct-calidad-separacion-upz-real ]
+
+        let primer-who-libre count turtles
+        hatch-hogares n-agentes [
+          crear-un-hogar estrato-actual poblacion-por-agente prob-base-cohorte pct-calidad-frac
+        ]
+        let cohorte hogares with [ who >= primer-who-libre ]
+        normalizar-factor-heterogeneidad-cohorte cohorte
+      ]
+    ]
+  ]
+end
+
+;; Orden EXACTO de los 3 sorteos de HogarAgente.__init__ (Python) -- no reordenar.
+to crear-un-hogar [ estrato pob-agente prob-base-cohorte pct-calidad-frac ]
+  set mi-zona myself
+  set estrato-categoria estrato
+  set poblacion-representada pob-agente
+  set pct-calidad-separacion pct-calidad-frac
+
+  ;; Sorteo #1: participacion comunitaria -> ajusta la BASE antes de fijar prob-separa-actual
+  set participa-comunitariamente? (random-float 1.0 < ([ pct-participacion-comunitaria-localidad ] of mi-zona / 100))
+  let base prob-base-cohorte
+  if participa-comunitariamente? [ set base ajustar-probabilidad-por-odds-ratio base 2.48 ]
+  ;; Palanca de escenario: mejora-separacion-fuente (1.0 = dato real) representa una
+  ;; politica que eleva cuanto separan los hogares en la fuente (educacion/cultura/incentivos).
+  set prob-separa-base min list 1 (base * mejora-separacion-fuente)
+  set prob-separa-actual prob-separa-base
+
+  ;; Sorteo #2 (vivienda propia) y Sorteo #3 (informalidad) -> multiplicador de SALIDA separado
+  set tiene-vivienda-propia? (random-float 1.0 < ([ pct-vivienda-propia-localidad ] of mi-zona / 100))
+  set es-informal? (random-float 1.0 < ([ pct-informal-localidad ] of mi-zona / 100))
+  let factor 1.0
+  if tiene-vivienda-propia? [ set factor factor * factor-vivienda-propia ]
+  if es-informal? [ set factor factor * factor-informal ]
+  set factor-heterogeneidad-hogar factor
+
+  set piso-escalado prob-separa-piso * factor-brecha-intencion-accion
+  set generacion-diaria poblacion-representada * 0.35 / 365 * dias-por-tick
+  set material-separado-acumulado 0
+  set material-no-separado-acumulado 0
+
+  set estado-actitud "bueno"
+  set color [ 96 214 122 210 ]
+  set shape "person"
+  set size (1.5 + (poblacion-representada / 4000))
+  move-to one-of [ mis-patches ] of myself
+end
+
+to normalizar-factor-heterogeneidad-cohorte [ cohorte ]
+  if any? cohorte [
+    let peso-total sum [ poblacion-representada ] of cohorte
+    if peso-total > 0 [
+      let promedio (sum [ factor-heterogeneidad-hogar * poblacion-representada ] of cohorte) / peso-total
+      if promedio > 0 [
+        ask cohorte [ set factor-heterogeneidad-hogar factor-heterogeneidad-hogar / promedio ]
+      ]
+    ]
+  ]
+end
+
+;; ============================================================================
+;; GO -- ciclo diario, orden exacto de abm/modelo.py::step()
+;; ============================================================================
+
+to go
+  if ticks >= semanas-por-anio [ stop ]
+
+  ask zonas [
+    set material-generado-dia 0
+    set material-pool-disponible 0
+    set material-aprovechado-dia 0
+    set material-rechazo-dia 0
+  ]
+
+  set recolectado-informal-dia 0
+  ask hogares [ step-hogar ]
+  ask poblacion-recicladores [ reclamar-material ]
+
+  recoleccion-formal
+
+  ask zonas [
+    set material-rechazo-dia max list (material-generado-dia - material-aprovechado-dia) 0
+    set acumulado-generado acumulado-generado + material-generado-dia
+    set acumulado-aprovechado acumulado-aprovechado + material-aprovechado-dia
+    set acumulado-rechazo acumulado-rechazo + material-rechazo-dia
+  ]
+
+  ;; --- capa visual (no toca la logica) ---
+  mover-camiones
+  mover-recicladores
+  ask rellenos [ set label (word "Dona Juana: " (precision rechazo-acumulado-ciudad 0) " ton") ]
+  aplicar-visibilidad
+  actualizar-color-zonas
+
+  tick
+
+  ;; Cada tick es una SEMANA -> el ciclo de imitacion/free-riding corre cada tick
+  ;; (equivale a "cada 7 dias" del modelo diario: ~52 veces al anio).
+  actualizar-actitudes-hogares
+  actualizar-metricas-animo
+end
+
+to correr-anio-completo
+  repeat 52 [ if ticks < semanas-por-anio [ go ] ]
+end
+
+;; ============================================================================
+;; ESCENARIOS DE 1 CLIC -- configuran las palancas causales, preparan y corren
+;; el anio completo. Pensados para que cualquier publico responda la pregunta
+;; del proyecto sin instrucciones.
+;; ============================================================================
+
+to escenario-realidad
+  set multiplicador-infraestructura 1.0
+  set multiplicador-capacidad-formal 1.0
+  set mejora-separacion-fuente 1.0
+  setup
+  correr-anio-completo
+end
+
+;; Escenario clave: una politica de educacion/cultura/incentivos que hace que los
+;; hogares SEPAREN MAS en la fuente (sube prob-separa-base). Es la palanca de mayor
+;; efecto (ver hoja de hallazgos): +6.6 pp / +34% relativo en 2024.
+to escenario-mejor-separacion
+  set multiplicador-infraestructura 1.0
+  set multiplicador-capacidad-formal 1.0
+  set mejora-separacion-fuente 1.35
+  setup
+  correr-anio-completo
+end
+
+to escenario-doble-infraestructura
+  set multiplicador-infraestructura 2.0
+  set multiplicador-capacidad-formal 1.0
+  set mejora-separacion-fuente 1.0
+  setup
+  correr-anio-completo
+end
+
+to escenario-doble-capacidad
+  set multiplicador-infraestructura 1.0
+  set multiplicador-capacidad-formal 2.0
+  set mejora-separacion-fuente 1.0
+  setup
+  correr-anio-completo
+end
+
+;; % de aprovechamiento REAL reportado por la ciudad para el anio simulado
+;; (tabla 23_confirmacion_calibracion_2018_2024.csv; 2024 aun sin cifra oficial
+;; consolidada al cierre del proyecto -> se muestra la ultima disponible, 2023,
+;; como referencia).
+to-report dato-real-anio
+  if anio-simulado = 2018 [ report 15.38 ]
+  if anio-simulado = 2019 [ report 15.70 ]
+  if anio-simulado = 2020 [ report 17.28 ]
+  if anio-simulado = 2021 [ report 19.18 ]
+  if anio-simulado = 2022 [ report 18.27 ]
+  report 18.56
+end
+
+to step-hogar
+  let infra [ infraestructura-index ] of mi-zona
+  let prob-efectiva min list 1 (prob-separa-actual * infra * factor-heterogeneidad-hogar)
+  let material-separado generacion-diaria * prob-efectiva * pct-calidad-separacion
+  ask mi-zona [
+    set material-generado-dia material-generado-dia + [ generacion-diaria ] of myself
+    set material-pool-disponible material-pool-disponible + material-separado
+  ]
+  set material-separado-acumulado material-separado-acumulado + material-separado
+  set material-no-separado-acumulado material-no-separado-acumulado + (generacion-diaria - material-separado)
+end
+
+to reclamar-material
+  let capacidad (n-recicladores-asignados * capacidad-recoleccion-individual) / 1000 * dias-por-tick
+  let disponible [ material-pool-disponible ] of mi-zona
+  let reclamado min list capacidad disponible
+  ask mi-zona [
+    set material-pool-disponible material-pool-disponible - reclamado
+    set material-aprovechado-dia material-aprovechado-dia + reclamado
+  ]
+  set material-recolectado-acumulado material-recolectado-acumulado + reclamado
+  set recolectado-informal-dia recolectado-informal-dia + reclamado
+end
+
+;; Reparto PROPORCIONAL al pool restante de cada zona -- replica
+;; abm/modelo.py::_recoleccion_formal exactamente.
+to recoleccion-formal
+  ;; TERRITORIAL: cada ASE recoge solo en su area de servicio exclusivo, hasta su
+  ;; capacidad (de la semana). Reparto proporcional al pool de sus propias zonas.
+  set ultimo-recolectado-formal-dia 0
+  ask operadores [
+    let cap capacidad-dia-ton-efectiva * dias-por-tick
+    let mis-zonas zonas with [ ase-num = [ ase-num ] of myself ]
+    let pool sum [ material-pool-disponible ] of mis-zonas
+    let recolectado min list pool cap
+    set material-recolectado-acumulado material-recolectado-acumulado + recolectado
+    set ultimo-recolectado-formal-dia ultimo-recolectado-formal-dia + recolectado
+    if pool > 0 [
+      ask mis-zonas [
+        let proporcion material-pool-disponible / pool
+        let recolectado-upz recolectado * proporcion
+        set material-aprovechado-dia material-aprovechado-dia + recolectado-upz
+        set material-pool-disponible material-pool-disponible - recolectado-upz
+      ]
+    ]
+  ]
+end
+
+;; Decaimiento/recuperacion cada 7 ticks -- DOS pasadas O(n), autoinclusion de la propia UPZ,
+;; nunca mezcla estratos distintos. Replica abm/modelo.py::_actualizar_actitudes_hogares.
+to actualizar-actitudes-hogares
+  let suma-tabla table:make
+  let conteo-tabla table:make
+  ask hogares [
+    let clave (list [ codigo-upz ] of mi-zona estrato-categoria)
+    ifelse table:has-key? suma-tabla clave [
+      table:put suma-tabla clave ((table:get suma-tabla clave) + prob-separa-actual)
+      table:put conteo-tabla clave ((table:get conteo-tabla clave) + 1)
+    ] [
+      table:put suma-tabla clave prob-separa-actual
+      table:put conteo-tabla clave 1
+    ]
+  ]
+
+  let promedio-local table:make
+  foreach table:keys suma-tabla [ clave ->
+    table:put promedio-local clave ((table:get suma-tabla clave) / (table:get conteo-tabla clave))
+  ]
+
+  foreach table:keys promedio-local [ clave ->
+    let upz item 0 clave
+    let estr item 1 clave
+    let zona-actual one-of zonas with [ codigo-upz = upz ]
+    let vecinos-agentset [ vecindad-upz-neighbors ] of zona-actual
+    let vecinos-codigos (fput upz ([ codigo-upz ] of vecinos-agentset))
+    let valores []
+    foreach vecinos-codigos [ c ->
+      if table:has-key? promedio-local (list c estr) [
+        set valores lput (table:get promedio-local (list c estr)) valores
+      ]
+    ]
+    if not empty? valores [
+      let promedio-vecinos mean valores
+      ask hogares with [ ([ codigo-upz ] of mi-zona = upz) and (estrato-categoria = estr) ] [
+        actualizar-actitud-hogar promedio-vecinos
+      ]
+    ]
+  ]
+end
+
+to actualizar-actitud-hogar [ promedio-vecinos ]
+  ifelse promedio-vecinos < (prob-separa-base - umbral-percepcion-impacto) [
+    let piso-efectivo min list piso-escalado prob-separa-base
+    set prob-separa-actual max list piso-efectivo (prob-separa-actual - beta-decaimiento)
+  ] [
+    set prob-separa-actual min list prob-separa-base (prob-separa-actual + beta-recuperacion)
+  ]
+  actualizar-color-estado-hogar
+end
+
+;; Verde=en su base, Rojo=en el piso, Amarillo=decayendo -- mismo criterio que
+;; abm/dashboard.py::PanelComportamientoAgentes.
+to actualizar-color-estado-hogar
+  let epsilon 0.000001
+  ifelse prob-separa-actual >= (prob-separa-base - epsilon) [
+    set estado-actitud "bueno"
+    set color [ 96 214 122 210 ]
+  ] [
+    ifelse prob-separa-actual <= (piso-escalado + epsilon) [
+      set estado-actitud "critico"
+      set color [ 238 82 68 245 ]
+    ] [
+      set estado-actitud "advertencia"
+      set color [ 255 202 58 235 ]
+    ]
+  ]
+end
+
+;; ============================================================================
+;; DINAMICAS EMERGENTES -- instrumentacion para OBSERVAR lo que el sistema
+;; genera solo: contagio espacial del desanimo, segregacion por estrato,
+;; divergencia entre zonas y competencia informal/formal. Solo lectura:
+;; ninguna de estas metricas altera el comportamiento de los agentes.
+;; ============================================================================
+
+to-report valor-tabla [ t k ]
+  report ifelse-value (table:has-key? t k) [ table:get t k ] [ 0 ]
+end
+
+;; Recalcula, una vez por ciclo semanal de actitud, el estado agregado de cada
+;; zona: cuantos hogares tiene, cuantos estan fuera de su base (desanimados) y
+;; el indice de animo (promedio de prob-actual / prob-base, 1.0 = zona firme).
+to actualizar-metricas-animo
+  let conteo table:make
+  let fuera table:make
+  let suma-ratio table:make
+  ask hogares [
+    let k [ who ] of mi-zona
+    table:put conteo k ((valor-tabla conteo k) + 1)
+    if estado-actitud != "bueno" [ table:put fuera k ((valor-tabla fuera k) + 1) ]
+    let ratio ifelse-value (prob-separa-base > 0) [ prob-separa-actual / prob-separa-base ] [ 1 ]
+    table:put suma-ratio k ((valor-tabla suma-ratio k) + ratio)
+  ]
+  ask zonas [
+    set n-hog-zona valor-tabla conteo who
+    set n-fuera-base-zona valor-tabla fuera who
+    set indice-animo ifelse-value (n-hog-zona > 0) [ (valor-tabla suma-ratio who) / n-hog-zona ] [ 1 ]
+  ]
+end
+
+;; UPZ donde mas de la mitad de los hogares ya no esta en su base de separacion.
+to-report upz-en-desanimo
+  report count zonas with [ (n-hog-zona > 0) and ((n-fuera-base-zona / n-hog-zona) > 0.5) ]
+end
+
+;; Segregacion emergente: % de hogares fuera de su base segun el tipo social de
+;; la zona ("Baja" / "Media" / "Alta"). El modelo NO programa esta brecha: surge
+;; de infraestructura, red de vecindad y composicion de cada zona.
+to-report pct-fuera-base-tipo [ tipo ]
+  let hs sum [ n-hog-zona ] of zonas with [ clasificacion-social = tipo ]
+  if hs = 0 [ report 0 ]
+  report (sum [ n-fuera-base-zona ] of zonas with [ clasificacion-social = tipo ]) / hs * 100
+end
+
+;; Divergencia entre zonas: brecha mejor-peor y desviacion estandar del % de
+;; aprovechamiento acumulado entre las 112 UPZ.
+to-report lista-pct-zonas
+  report [ acumulado-aprovechado / acumulado-generado * 100 ] of zonas with [ acumulado-generado > 0 ]
+end
+
+to-report brecha-upz-pp
+  let vals lista-pct-zonas
+  if length vals < 2 [ report 0 ]
+  report (max vals) - (min vals)
+end
+
+to-report desviacion-upz-pp
+  let vals lista-pct-zonas
+  if length vals < 2 [ report 0 ]
+  report standard-deviation vals
+end
+
+;; Competencia informal/formal: que parte de lo recuperado HOY la pusieron los
+;; recicladores de oficio (ellos reclaman primero; el resto va a los camiones).
+to-report share-recicladores-pct
+  let a aprovechado-hoy-ton
+  report ifelse-value (a > 0) [ recolectado-informal-dia / a * 100 ] [ 0 ]
+end
+
+to-report share-formal-pct
+  let a aprovechado-hoy-ton
+  report ifelse-value (a > 0) [ (a - recolectado-informal-dia) / a * 100 ] [ 0 ]
+end
+
+;; ============================================================================
+;; CAPA VISUAL -- movimiento de actores, capas activables, paleta del mapa.
+;; Nada de esta seccion modifica cantidades del modelo.
+;; ============================================================================
+
+;; Los camiones ASE patrullan hacia zonas con material disponible; cada 4
+;; paradas viajan al relleno Dona Juana (representacion del viaje de descarga).
+to mover-camiones
+  ask operadores [
+    if (destino = 0) or (destino = nobody) [ set destino elegir-destino-camion ]
+    face destino
+    fd 1.2
+    if distance destino < 2 [
+      set paradas paradas + 1
+      set destino elegir-destino-camion
+    ]
+  ]
+end
+
+;; Destino CERCANO con mas material: entre las 8 zonas mas proximas, la de mayor
+;; pool -- rutas cortas y legibles en vez de saltos aleatorios por toda la ciudad.
+;; Cada 4 paradas, viaje de descarga al relleno Dona Juana.
+to-report elegir-destino-camion
+  ;; Patrulla SOLO dentro de su territorio ASE, hacia la zona con mas material.
+  let mis-zonas zonas with [ ase-num = [ ase-num ] of myself ]
+  if not any? mis-zonas [ report one-of zonas ]
+  report max-one-of mis-zonas [ material-pool-disponible ]
+end
+
+;; Los recicladores recorren su propia UPZ (caminata corta restringida).
+to mover-recicladores
+  ask poblacion-recicladores [
+    rt (random 41) - 20
+    fd 0.8
+    if [ zona-id ] of patch-here != [ codigo-upz ] of mi-zona [
+      move-to one-of [ mis-patches ] of mi-zona
+    ]
+  ]
+end
+
+to aplicar-visibilidad
+  ;; Muestra VISUAL de 1 de cada 3 hogares (los ~75k agentes siguen existiendo y
+  ;; calculando; solo se dibuja un subconjunto representativo para que el mapa
+  ;; respire y cada persona sea legible -- documentado en la leyenda).
+  if viz-hogares != mostrar-hogares? [
+    set viz-hogares mostrar-hogares?
+    ask hogares [ set hidden? (not mostrar-hogares?) or (who mod 3 != 0) ]
+  ]
+  if viz-recicladores != mostrar-recicladores? [
+    set viz-recicladores mostrar-recicladores?
+    ask poblacion-recicladores [ set hidden? not mostrar-recicladores? ]
+  ]
+  if viz-camiones != mostrar-camiones? [
+    set viz-camiones mostrar-camiones?
+    ask operadores [ set hidden? not mostrar-camiones? ]
+  ]
+  if viz-red != mostrar-red-upz? [
+    set viz-red mostrar-red-upz?
+    ask vecindades-upz [ set hidden? not mostrar-red-upz? ]
+  ]
+  if viz-etiquetas != mostrar-etiquetas? [
+    set viz-etiquetas mostrar-etiquetas?
+    ask etiquetas-loc [ set label ifelse-value mostrar-etiquetas? [ nombre-loc ] [ "" ] ]
+  ]
+end
+
+;; Gradiente profesional (azul profundo -> teal -> menta) con interpolacion
+;; lineal entre 5 anclas RGB. v se recorta a [vmin, vmax].
+to-report color-gradiente [ v vmin vmax ]
+  let t (v - vmin) / (vmax - vmin)
+  set t max list 0 (min list 1 t)
+  let anclas [ [ 232 238 230 ] [ 176 210 176 ] [ 116 186 138 ] [ 56 152 98 ] [ 20 104 62 ] ]
+  let pos t * 4
+  let i floor pos
+  if i >= 4 [ report item 4 anclas ]
+  let f pos - i
+  let c1 item i anclas
+  let c2 item (i + 1) anclas
+  report (map [ [ a b ] -> a + ((b - a) * f) ] c1 c2)
+end
+
+to-report color-divergente [ v vmin vmax ]
+  let t (v - vmin) / (vmax - vmin)
+  set t max list 0 (min list 1 t)
+  let anclas [ [ 200 52 46 ] [ 230 140 52 ] [ 226 194 82 ] [ 120 178 92 ] [ 42 134 78 ] ]
+  let pos t * 4
+  let i floor pos
+  if i >= 4 [ report item 4 anclas ]
+  let fr pos - i
+  let c1 item i anclas
+  let c2 item (i + 1) anclas
+  report (map [ [ a b ] -> a + ((b - a) * fr) ] c1 c2)
+end
+
+to-report color-zona-segun-vista
+  if vista-mapa = "animo de los hogares (hoy)" [
+    report color-divergente indice-animo 0.6 1.0
+  ]
+  if vista-mapa = "infraestructura instalada" [
+    report color-gradiente (infraestructura-index * 100) 0 100
+  ]
+  if vista-mapa = "% separacion declarada (EM2021)" [
+    report color-gradiente pct-separa-upz-real 40 90
+  ]
+  if vista-mapa = "estrato dominante" [
+    if (pct-estrato-bajo >= pct-estrato-medio) and (pct-estrato-bajo >= pct-estrato-alto) [ report [ 40 80 150 ] ]
+    if pct-estrato-medio >= pct-estrato-alto [ report [ 42 145 140 ] ]
+    report [ 185 222 160 ]
+  ]
+  if vista-mapa = "incentivo economico (CRA)" [
+    report color-gradiente factor-incentivo -0.7 0.6
+  ]
+  if vista-mapa = "% registro recicladores (RURO)" [
+    report color-gradiente pct-registro-activo-reciclador 0 100
+  ]
+  if vista-mapa = "por localidad (ánimo)" [
+    let cl codigo-localidad
+    report color-divergente (mean [ indice-animo ] of zonas with [ codigo-localidad = cl ]) 0.6 1.0
+  ]
+  let pct ifelse-value (acumulado-generado > 0) [ acumulado-aprovechado / acumulado-generado * 100 ] [ 0 ]
+  report color-gradiente pct 0 40
+end
+
+to actualizar-color-zonas
+  ask zonas [
+    let base-rgb color-zona-segun-vista
+    let borde-upz-rgb map [ c -> c * 0.62 ] base-rgb
+    ask mis-patches [
+      ;; jerarquia visual: localidad (oscuro, capa mas visible sobre fondo claro) > borde UPZ (tenue) > relleno UPZ
+      ifelse es-borde-localidad?
+        [ set pcolor [ 74 84 108 ] ]
+        [ set pcolor ifelse-value es-borde? [ borde-upz-rgb ] [ base-rgb ] ]
+    ]
+  ]
+end
+
+;; ============================================================================
+;; REPORTERS (monitors/plots) -- mismos KPI que abm/modelo.py::DataCollector
+;; ============================================================================
+
+to-report pct-aprovechamiento-dia
+  let g sum [ material-generado-dia ] of zonas
+  report ifelse-value (g > 0) [ (sum [ material-aprovechado-dia ] of zonas) / g * 100 ] [ 0 ]
+end
+
+to-report pct-aprovechamiento-acumulado-ciudad
+  let g sum [ acumulado-generado ] of zonas
+  report ifelse-value (g > 0) [ (sum [ acumulado-aprovechado ] of zonas) / g * 100 ] [ 0 ]
+end
+
+to-report capacidad-formal-usada-pct
+  ;; ultimo-recolectado-formal-dia y la capacidad se miden por TICK (semana),
+  ;; asi que la capacidad semanal es la diaria * dias-por-tick.
+  let cap-semana capacidad-formal-total-dia-ton * dias-por-tick
+  report ifelse-value (cap-semana > 0)
+    [ min list 100 (ultimo-recolectado-formal-dia / cap-semana * 100) ]
+    [ 0 ]
+end
+
+to-report generado-hoy-ton
+  report sum [ material-generado-dia ] of zonas
+end
+
+to-report aprovechado-hoy-ton
+  report sum [ material-aprovechado-dia ] of zonas
+end
+
+to-report rechazo-hoy-ton
+  report sum [ material-rechazo-dia ] of zonas
+end
+
+to-report rechazo-acumulado-ciudad
+  report sum [ acumulado-rechazo ] of zonas
+end
+
+to-report costo-fiscal-viat-cop
+  report (sum [ acumulado-aprovechado ] of zonas) * 11388
+end
+
+to-report costo-viat-millones-cop
+  report costo-fiscal-viat-cop / 1000000
+end
+
+to-report hogares-simulados
+  report count hogares
+end
+
+to-report hogares-reales-totales
+  report sum [ hogares-reales ] of zonas
+end
+
+to-report total-recicladores
+  report round sum [ n-recicladores-asignados ] of poblacion-recicladores
+end
+
+to-report recuperado-recicladores-ton
+  report sum [ material-recolectado-acumulado ] of poblacion-recicladores
+end
+
+to-report recuperado-formal-ton
+  report sum [ material-recolectado-acumulado ] of operadores
+end
+
+to-report n-estado-bueno
+  report count hogares with [ estado-actitud = "bueno" ]
+end
+
+to-report n-estado-advertencia
+  report count hogares with [ estado-actitud = "advertencia" ]
+end
+
+to-report n-estado-critico
+  report count hogares with [ estado-actitud = "critico" ]
+end

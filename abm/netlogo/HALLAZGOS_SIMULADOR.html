@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hallazgos — Simulador ABM Residuos Bogotá</title>
+<style>
+  :root{
+    --tinta:#0f1a2b; --tinta2:#33465f; --suave:#5b6b82;
+    --verde:#2f8f5b; --verde-claro:#7fce9b; --ambar:#e0a23a; --rojo:#d1503f;
+    --azul:#2f6f93; --linea:#e2e8f0; --fondo:#f7f9fc; --tarjeta:#ffffff;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    background:var(--fondo);color:var(--tinta);line-height:1.5;padding:32px 20px}
+  .hoja{max-width:940px;margin:0 auto}
+  header{border-bottom:3px solid var(--tinta);padding-bottom:16px;margin-bottom:24px}
+  .kicker{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--suave);font-weight:700}
+  h1{font-size:26px;margin:6px 0 4px;line-height:1.2}
+  .pregunta{font-size:15px;color:var(--tinta2);font-style:italic}
+  .headline{background:var(--tinta);color:#fff;border-radius:14px;padding:24px 26px;margin-bottom:24px}
+  .headline .et{font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--verde-claro);font-weight:700}
+  .headline p{font-size:19px;margin-top:8px;font-weight:500}
+  .headline b{color:var(--verde-claro)}
+  h2{font-size:13px;letter-spacing:.1em;text-transform:uppercase;color:var(--suave);
+    margin:28px 0 12px;font-weight:700;border-bottom:1px solid var(--linea);padding-bottom:6px}
+  /* escenarios */
+  .esc{display:grid;grid-template-columns:1fr;gap:12px}
+  .fila{background:var(--tarjeta);border:1px solid var(--linea);border-radius:12px;
+    padding:14px 18px;display:grid;grid-template-columns:210px 1fr 92px;align-items:center;gap:16px}
+  .fila .nom{font-weight:600;font-size:14px}
+  .fila .nom small{display:block;color:var(--suave);font-weight:400;font-size:12px}
+  .barra{background:#eef2f7;border-radius:8px;height:26px;position:relative;overflow:hidden}
+  .barra span{position:absolute;left:0;top:0;bottom:0;border-radius:8px}
+  .val{text-align:right;font-variant-numeric:tabular-nums;font-weight:700;font-size:18px}
+  .delta{font-size:12px;font-weight:700}
+  .up{color:var(--verde)} .flat{color:var(--suave)}
+  /* dinamicas */
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .card{background:var(--tarjeta);border:1px solid var(--linea);border-radius:12px;padding:16px 18px}
+  .card h3{font-size:15px;margin-bottom:6px;display:flex;align-items:center;gap:8px}
+  .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+  .card p{font-size:13px;color:var(--tinta2)}
+  .card .kpi{font-size:13px;color:var(--suave);margin-top:8px;font-weight:600}
+  /* numeros clave */
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+  .kpi-box{background:var(--tarjeta);border:1px solid var(--linea);border-radius:12px;padding:16px;text-align:center}
+  .kpi-box .n{font-size:24px;font-weight:800;color:var(--tinta)}
+  .kpi-box .l{font-size:11px;color:var(--suave);margin-top:4px}
+  .nota{font-size:12px;color:var(--suave);margin-top:24px;border-top:1px solid var(--linea);padding-top:14px}
+  .nota b{color:var(--tinta2)}
+  footer{margin-top:20px;font-size:11px;color:var(--suave);text-align:center}
+</style>
+</head>
+<body>
+<div class="hoja">
+
+  <header>
+    <div class="kicker">Simulador basado en agentes · Gestión de residuos · Bogotá</div>
+    <h1>Qué nos dice el modelo</h1>
+    <div class="pregunta">¿Cuánto más reciclaría Bogotá si mejora la infraestructura o la capacidad de recolección?</div>
+  </header>
+
+  <div class="headline">
+    <div class="et">El hallazgo principal</div>
+    <p>La palanca más poderosa es <b>lograr que la gente separe mejor en casa</b> (+6.6 puntos).
+    Le sigue <b>mejorar la infraestructura de reciclaje</b> (+5 puntos). En cambio, comprar
+    <b>más camiones no sube el reciclaje en absoluto</b> (usan solo ~19% de su capacidad).
+    El cuello de botella no es recoger la basura: es <b>cuánta se separa en la fuente</b>.</p>
+  </div>
+
+  <h2>Los cuatro escenarios, comparados</h2>
+  <div class="esc">
+    <div class="fila">
+      <div class="nom">La realidad (2024)<small>sin ninguna intervención</small></div>
+      <div class="barra"><span style="width:49%;background:var(--tinta2)"></span></div>
+      <div class="val">19.5%</div>
+    </div>
+    <div class="fila">
+      <div class="nom">★ Separar mejor en casa<small>educación / cultura / incentivos (+35% de separación)</small></div>
+      <div class="barra"><span style="width:65%;background:var(--verde)"></span></div>
+      <div class="val">26.1% <span class="delta up">+6.6</span></div>
+    </div>
+    <div class="fila">
+      <div class="nom">Doblar la infraestructura<small>+100% infraestructura de reciclaje por barrio</small></div>
+      <div class="barra"><span style="width:61%;background:var(--verde-claro)"></span></div>
+      <div class="val">24.5% <span class="delta up">+5.0</span></div>
+    </div>
+    <div class="fila">
+      <div class="nom">Doblar los camiones ASE<small>+100% capacidad de recolección formal</small></div>
+      <div class="barra"><span style="width:49%;background:var(--suave)"></span></div>
+      <div class="val">19.5% <span class="delta flat">+0.0</span></div>
+    </div>
+  </div>
+  <div class="nota" style="margin-top:12px">
+    Cifras de aprovechamiento de la ciudad simulada (año 2024). Separar mejor rinde <b>+34%
+    relativo</b>; la infraestructura, <b>+26%</b>; los camiones, <b>nada</b>. La conclusión de
+    política es contundente: <b>el dinero debe ir a que la gente separe en la fuente y a la
+    infraestructura que recibe lo separado — no a comprar flota.</b>
+  </div>
+
+  <h2>Cuatro dinámicas que el modelo hace emerger (nadie las programó)</h2>
+  <div class="grid2">
+    <div class="card">
+      <h3><span class="dot" style="background:var(--rojo)"></span>Contagio del desánimo</h3>
+      <p>Cuando un barrio ve que sus vecinos separan poco, se desanima y deja de separar.
+      Ese desánimo se propaga por la red de barrios vecinos como una mancha.</p>
+      <div class="kpi">→ Se ve en el mapa (vista «ánimo») y en la gráfica ③</div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--ambar)"></span>Desigualdad por estrato</h3>
+      <p>El desánimo golpea mucho más a los barrios de estrato bajo, donde la infraestructura
+      es más pobre. La brecha social del sistema real aparece sola.</p>
+      <div class="kpi">→ Gráfica ③: la línea roja (Bajo) se despega de las demás</div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--rojo)"></span>La ciudad se parte en dos</h3>
+      <p>La distancia entre el mejor y el peor barrio crece con el tiempo: se forman dos
+      velocidades de reciclaje en la misma ciudad.</p>
+      <div class="kpi">→ Gráfica ④: la brecha entre UPZ sube, no baja</div>
+    </div>
+    <div class="card">
+      <h3><span class="dot" style="background:var(--azul)"></span>Reparto informal / formal</h3>
+      <p>Los recicladores de oficio reclaman primero el material; los camiones recogen el resto.
+      El reparto ~27% / 73% no se fijó a mano: es un resultado.</p>
+      <div class="kpi">→ Gráfica ②: ámbar (recicladores) vs azul (camiones)</div>
+    </div>
+  </div>
+
+  <h2>Los números que sostienen todo</h2>
+  <div class="kpis">
+    <div class="kpi-box"><div class="n">18.8%</div><div class="l">aprovechamiento simulado 2024 (real ≈18.6%)</div></div>
+    <div class="kpi-box"><div class="n">~19%</div><div class="l">de la capacidad de camiones que se usa (nunca se satura)</div></div>
+    <div class="kpi-box"><div class="n">23.859</div><div class="l">recicladores de oficio representados (RURO)</div></div>
+    <div class="kpi-box"><div class="n">1.2 pp</div><div class="l">error del modelo vs. dato real 2019-2023 (RMSE)</div></div>
+  </div>
+
+  <div class="nota">
+    <b>Cómo leer el simulador:</b> pulsa un botón de «Escenario de 1 clic» y mira el número grande
+    (% que recupera la ciudad) y la caja «EL HALLAZGO». El mapa en vista «ánimo» muestra el contagio;
+    las 4 gráficas de la derecha muestran validación, reparto, contagio y desigualdad.<br><br>
+    <b>Alcance y honestidad:</b> el modelo reproduce bien el <b>nivel</b> (~18%) y solo parcialmente
+    la <b>tendencia</b> año a año; representa el 88,5% de la población clasificable por estrato.
+    Las palancas causales verificadas son solo infraestructura y capacidad formal. Fuentes: EM2021,
+    RURO, RBL/SUI, SIGAB, DANE/SDP, tarifa CRA. Escenarios corridos sobre el modelo Python calibrado.
+  </div>
+
+  <footer>Proyecto de grado · Corporación Unificada Nacional de Educación Superior (CUN) · Manuel González · 2026</footer>
+
+</div>
+</body>
+</html>
